@@ -1,0 +1,859 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Planet Terror: Zombie Highway - WebXR Meta Quest 3</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <meta name="mobile-web-app-capable" content="yes">
+  <script type="importmap">
+  {"imports": {"three": "https://unpkg.com/three@0.150.1/build/three.module.js"}}
+  </script>
+  <style>
+    body { margin: 0; overflow: hidden; background: #000; font-family: 'Impact', sans-serif; }
+    #overlay { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 1; display: flex; align-items: center; justify-content: center; background: radial-gradient(ellipse at center, #001100 0%, #000 100%); }
+    #start-button { width: 100%; height: 100%; font-size: 120px; background: linear-gradient(135deg, #003300, #00ff00); color: #fff; border: none; cursor: pointer; text-shadow: 0 0 40px #00ff00, 0 5px 10px #000; animation: pulse 2s infinite; filter: contrast(1.2) saturate(1.5); }
+    @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.05); filter: brightness(1.3); } }
+    .webxr-hidden { display: none !important; }
+  </style>
+</head>
+<body>
+  <div id="overlay"><button id="start-button">🧟</button></div>
+  <script type="module">
+    import * as THREE from 'three';
+    
+    let camera, scene, renderer, xrSession, clock = new THREE.Clock();
+    let activeController, controllers = [], activeControllerIndex = 0;
+    let truck, roadSegments = [], zombies = [], bloodSplatters = [], bodyParts = [];
+    let currentLane = 1, targetLane = 1, speed = 0.12, score = 0, time = 0, killCount = 0;
+    let exhaustSmoke = [], mudSplatters = [], debris = [];
+    const LANES = [-0.25, 0, 0.25], SEGMENT_LENGTH = 2;
+    const GROUND_HEIGHT = -0.35;
+    
+    let isControllerSelectionPhase = false, controllerSelectionStartTime = 0;
+    let controllerHoldStartTime = {}, selectedController = null;
+    let screenBlood = [], bloodPools = [];
+
+    init();
+    
+    function init() {
+      scene = new THREE.Scene();
+      camera = new THREE.PerspectiveCamera(70, window.innerWidth / window.innerHeight, 0.01, 100);
+      
+      renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
+      renderer.setSize(window.innerWidth, window.innerHeight);
+      renderer.xr.enabled = true;
+      renderer.shadowMap.enabled = true;
+      renderer.shadowMap.type = THREE.PCFSoftShadowMap;
+      renderer.toneMapping = THREE.ACESFilmicToneMapping;
+      renderer.toneMappingExposure = 0.8;
+      document.body.appendChild(renderer.domElement);
+      
+      // Dark forest fog
+      scene.fog = new THREE.FogExp2(0x001100, 0.08);
+      const ambient = new THREE.AmbientLight(0x112211, 0.2);
+      scene.add(ambient);
+      
+      // Moonlight from above
+      const moon = new THREE.DirectionalLight(0x4466aa, 0.4);
+      moon.position.set(0, 6, -2);
+      moon.castShadow = true;
+      moon.shadow.camera.left = -5;
+      moon.shadow.camera.right = 5;
+      moon.shadow.camera.top = 5;
+      moon.shadow.camera.bottom = -5;
+      scene.add(moon);
+      
+      createTruck();
+      generateRoad();
+      createForest();
+      
+      document.getElementById('start-button').addEventListener('click', startARSession);
+      window.addEventListener('resize', onWindowResize);
+    }
+    
+    function createTruck() {
+      truck = new THREE.Group();
+      
+      // Black metal truck body
+      const bodyGeo = new THREE.BoxGeometry(0.14, 0.12, 0.35);
+      const bodyMat = new THREE.MeshPhongMaterial({
+        color: 0x0a0a0a,
+        metalness: 0.8,
+        roughness: 0.3,
+        emissive: 0x111111,
+        emissiveIntensity: 0.1
+      });
+      const body = new THREE.Mesh(bodyGeo, bodyMat);
+      body.position.y = 0.06;
+      body.castShadow = true;
+      truck.add(body);
+      
+      // Chrome details
+      const chromeGeo = new THREE.BoxGeometry(0.145, 0.02, 0.36);
+      const chromeMat = new THREE.MeshPhongMaterial({
+        color: 0xaaaaaa,
+        metalness: 0.95,
+        roughness: 0.05
+      });
+      const chromeStrip = new THREE.Mesh(chromeGeo, chromeMat);
+      chromeStrip.position.y = 0.11;
+      truck.add(chromeStrip);
+      
+      // Cabin with windshield
+      const cabinGeo = new THREE.BoxGeometry(0.12, 0.08, 0.12);
+      const cabinMat = new THREE.MeshPhysicalMaterial({
+        color: 0x222222,
+        metalness: 0.3,
+        roughness: 0.2,
+        transparent: true,
+        opacity: 0.7,
+        transmission: 0.2
+      });
+      const cabin = new THREE.Mesh(cabinGeo, cabinMat);
+      cabin.position.set(0, 0.1, -0.08);
+      truck.add(cabin);
+      
+      // Chrome spiked bumper
+      const bumperGeo = new THREE.BoxGeometry(0.16, 0.03, 0.02);
+      const bumperMat = new THREE.MeshPhongMaterial({
+        color: 0xcccccc,
+        metalness: 0.95,
+        roughness: 0.1
+      });
+      const bumper = new THREE.Mesh(bumperGeo, bumperMat);
+      bumper.position.set(0, 0.03, -0.18);
+      truck.add(bumper);
+      
+      // Spikes
+      for(let i = 0; i < 7; i++) {
+        const spikeGeo = new THREE.ConeGeometry(0.01, 0.05, 4);
+        const spikeMat = new THREE.MeshPhongMaterial({
+          color: 0x666666,
+          metalness: 0.9
+        });
+        const spike = new THREE.Mesh(spikeGeo, spikeMat);
+        spike.rotation.x = -Math.PI / 2;
+        spike.position.set(-0.07 + i * 0.023, 0.03, -0.21);
+        truck.add(spike);
+      }
+      
+      // Wheels
+      const wheelGeo = new THREE.CylinderGeometry(0.045, 0.045, 0.025, 12);
+      const wheelMat = new THREE.MeshPhongMaterial({
+        color: 0x1a1a1a,
+        roughness: 0.9
+      });
+      
+      for(let i = 0; i < 4; i++) {
+        const wheel = new THREE.Mesh(wheelGeo, wheelMat);
+        wheel.rotation.z = Math.PI / 2;
+        wheel.position.set(
+          i % 2 === 0 ? -0.08 : 0.08,
+          0.02,
+          i < 2 ? -0.12 : 0.12
+        );
+        wheel.castShadow = true;
+        truck.add(wheel);
+      }
+      
+      // Powerful headlights
+      for(let i = 0; i < 2; i++) {
+        const lightGeo = new THREE.SphereGeometry(0.02, 8, 8);
+        const lightMat = new THREE.MeshBasicMaterial({
+          color: 0xffffaa,
+          emissive: 0xffffaa,
+          emissiveIntensity: 5
+        });
+        const headlight = new THREE.Mesh(lightGeo, lightMat);
+        headlight.position.set(i === 0 ? -0.04 : 0.04, 0.06, -0.17);
+        truck.add(headlight);
+        
+        // Strong spotlight for road illumination
+        const light = new THREE.SpotLight(0xffffaa, 3, 8, Math.PI / 4, 0.2);
+        light.position.copy(headlight.position);
+        light.target.position.set(headlight.position.x * 0.5, GROUND_HEIGHT, -3);
+        light.castShadow = true;
+        light.shadow.mapSize.width = 512;
+        light.shadow.mapSize.height = 512;
+        truck.add(light);
+        truck.add(light.target);
+      }
+      
+      // Red tail lights
+      for(let i = 0; i < 2; i++) {
+        const tailGeo = new THREE.BoxGeometry(0.015, 0.02, 0.01);
+        const tailMat = new THREE.MeshBasicMaterial({
+          color: 0xff0000,
+          emissive: 0xff0000,
+          emissiveIntensity: 2
+        });
+        const taillight = new THREE.Mesh(tailGeo, tailMat);
+        taillight.position.set(i === 0 ? -0.05 : 0.05, 0.06, 0.175);
+        truck.add(taillight);
+      }
+      
+      truck.position.set(0, GROUND_HEIGHT + 0.06, -0.8);
+      truck.castShadow = true;
+      scene.add(truck);
+    }
+    
+    function generateRoad() {
+      for (let i = 0; i < 25; i++) {
+        createRoadSegment(-1 - i * SEGMENT_LENGTH);
+      }
+    }
+    
+    function createRoadSegment(zPos) {
+      const segment = new THREE.Group();
+      
+      // Dark wet asphalt
+      const roadGeo = new THREE.PlaneGeometry(0.8, SEGMENT_LENGTH + 0.01);
+      const roadMat = new THREE.MeshPhongMaterial({ 
+        color: 0x0a0a0a,
+        roughness: 0.7,
+        metalness: 0.1
+      });
+      const road = new THREE.Mesh(roadGeo, roadMat);
+      road.rotation.x = -Math.PI / 2;
+      road.position.y = GROUND_HEIGHT;
+      road.receiveShadow = true;
+      segment.add(road);
+      
+      // Yellow road lines
+      for (let lane = 0; lane < 4; lane++) {
+        if(Math.random() > 0.3) {
+          const lineGeo = new THREE.BoxGeometry(0.015, 0.002, SEGMENT_LENGTH * 0.3);
+          const lineMat = new THREE.MeshBasicMaterial({ 
+            color: 0xcccc00,
+            transparent: true,
+            opacity: 0.5
+          });
+          const line = new THREE.Mesh(lineGeo, lineMat);
+          line.position.set([-0.3, -0.1, 0.1, 0.3][lane], GROUND_HEIGHT + 0.001, 0);
+          segment.add(line);
+        }
+      }
+      
+      // Occasional debris
+      if(Math.random() > 0.7) {
+        const debrisGeo = new THREE.BoxGeometry(0.05, 0.03, 0.08);
+        const debrisMat = new THREE.MeshPhongMaterial({
+          color: 0x333333,
+          roughness: 0.9
+        });
+        const debrisObj = new THREE.Mesh(debrisGeo, debrisMat);
+        debrisObj.position.set(
+          (Math.random() - 0.5) * 0.6,
+          GROUND_HEIGHT + 0.015,
+          (Math.random() - 0.5) * SEGMENT_LENGTH * 0.6
+        );
+        debrisObj.rotation.y = Math.random() * Math.PI;
+        segment.add(debrisObj);
+      }
+      
+      // Spawn zombies
+      if (Math.random() > 0.3 && zPos < -3) {
+        const zombieCount = Math.floor(Math.random() * 3) + 1;
+        for(let i = 0; i < zombieCount; i++) {
+          const zombie = createDetailedZombie();
+          zombie.position.set(
+            LANES[Math.floor(Math.random() * 3)] + (Math.random() - 0.5) * 0.08,
+            GROUND_HEIGHT + 0.08,
+            (Math.random() - 0.5) * SEGMENT_LENGTH * 0.5
+          );
+          segment.add(zombie);
+          zombies.push({ mesh: zombie, segment: segment, lane: zombie.position.x });
+        }
+      }
+      
+      segment.position.z = zPos;
+      scene.add(segment);
+      roadSegments.push(segment);
+    }
+    
+    function createDetailedZombie() {
+      const zombie = new THREE.Group();
+      const skinColors = [0x667755, 0x556644, 0x778866, 0x445533];
+      const skinColor = skinColors[Math.floor(Math.random() * skinColors.length)];
+      
+      // Torso
+      const torsoGeo = new THREE.BoxGeometry(0.04, 0.08, 0.025);
+      const torsoMat = new THREE.MeshPhongMaterial({
+        color: skinColor,
+        roughness: 0.9
+      });
+      const torso = new THREE.Mesh(torsoGeo, torsoMat);
+      torso.position.y = 0.04;
+      torso.castShadow = true;
+      zombie.add(torso);
+      
+      // Head
+      const headGeo = new THREE.BoxGeometry(0.03, 0.035, 0.03);
+      const headMat = new THREE.MeshPhongMaterial({
+        color: skinColor,
+        roughness: 0.8
+      });
+      const head = new THREE.Mesh(headGeo, headMat);
+      head.position.y = 0.095;
+      head.castShadow = true;
+      zombie.add(head);
+      
+      // RED glowing eyes
+      for(let i = 0; i < 2; i++) {
+        const eyeGeo = new THREE.SphereGeometry(0.005, 4, 4);
+        const eyeMat = new THREE.MeshBasicMaterial({
+          color: 0xff0000,
+          emissive: 0xff0000,
+          emissiveIntensity: 5
+        });
+        const eye = new THREE.Mesh(eyeGeo, eyeMat);
+        eye.position.set(i === 0 ? -0.01 : 0.01, 0.095, -0.015);
+        zombie.add(eye);
+        
+        // Add point light for eye glow
+        const eyeLight = new THREE.PointLight(0xff0000, 0.5, 0.5);
+        eyeLight.position.copy(eye.position);
+        zombie.add(eyeLight);
+      }
+      
+      // Jaw
+      const jawGeo = new THREE.BoxGeometry(0.025, 0.008, 0.005);
+      const jawMat = new THREE.MeshBasicMaterial({
+        color: 0xffffcc
+      });
+      const jaw = new THREE.Mesh(jawGeo, jawMat);
+      jaw.position.set(0, 0.082, -0.015);
+      zombie.add(jaw);
+      
+      // Arms
+      for(let side = 0; side < 2; side++) {
+        const armGeo = new THREE.CapsuleGeometry(0.008, 0.05, 4, 4);
+        const arm = new THREE.Mesh(armGeo, torsoMat);
+        arm.position.set(side === 0 ? -0.03 : 0.03, 0.03, 0);
+        arm.rotation.z = (side === 0 ? -0.3 : 0.3) + Math.random() * 0.2;
+        arm.castShadow = true;
+        zombie.add(arm);
+      }
+      
+      // Legs
+      for(let side = 0; side < 2; side++) {
+        const legGeo = new THREE.CapsuleGeometry(0.01, 0.04, 4, 4);
+        const legMat = new THREE.MeshPhongMaterial({
+          color: 0x333333,
+          roughness: 0.8
+        });
+        const leg = new THREE.Mesh(legGeo, legMat);
+        leg.position.set(side === 0 ? -0.012 : 0.012, -0.02, 0);
+        leg.castShadow = true;
+        zombie.add(leg);
+      }
+      
+      zombie.userData.shambleOffset = Math.random() * Math.PI * 2;
+      zombie.userData.shambleSpeed = 0.5 + Math.random() * 2;
+      zombie.castShadow = true;
+      
+      return zombie;
+    }
+    
+    function createModerateBloodSplatter(position) {
+      // Create 10 blood particles (reduced from 50)
+      for(let i = 0; i < 10; i++) {
+        const geo = new THREE.SphereGeometry(0.005 + Math.random() * 0.01, 6, 6);
+        const mat = new THREE.MeshBasicMaterial({
+          color: Math.random() > 0.3 ? 0xff0000 : 0x660000,
+          transparent: true,
+          opacity: 0.7
+        });
+        const drop = new THREE.Mesh(geo, mat);
+        drop.position.copy(position);
+        drop.position.x += (Math.random() - 0.5) * 0.1;
+        drop.position.y += Math.random() * 0.05;
+        drop.position.z += (Math.random() - 0.5) * 0.1;
+        
+        drop.userData.velocity = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.04,
+          Math.random() * 0.05 + 0.01,
+          (Math.random() - 0.5) * 0.04
+        );
+        bloodSplatters.push(drop);
+        scene.add(drop);
+      }
+      
+      // Smaller blood pool
+      const poolGeo = new THREE.PlaneGeometry(0.1, 0.1);
+      const poolMat = new THREE.MeshBasicMaterial({
+        color: 0x660000,
+        transparent: true,
+        opacity: 0.6
+      });
+      const pool = new THREE.Mesh(poolGeo, poolMat);
+      pool.rotation.x = -Math.PI / 2;
+      pool.position.copy(position);
+      pool.position.y = GROUND_HEIGHT + 0.0002;
+      bloodPools.push(pool);
+      scene.add(pool);
+    }
+    
+    function createBodyParts(position) {
+      const parts = ['arm', 'leg'];
+      const partCount = 1;
+      
+      for(let i = 0; i < partCount; i++) {
+        const partType = parts[Math.floor(Math.random() * parts.length)];
+        let partMesh;
+        
+        switch(partType) {
+          case 'arm':
+            partMesh = new THREE.Mesh(
+              new THREE.CapsuleGeometry(0.008, 0.05, 4, 4),
+              new THREE.MeshPhongMaterial({ color: 0x667755 })
+            );
+            break;
+          case 'leg':
+            partMesh = new THREE.Mesh(
+              new THREE.CapsuleGeometry(0.01, 0.04, 4, 4),
+              new THREE.MeshPhongMaterial({ color: 0x333366 })
+            );
+            break;
+        }
+        
+        partMesh.position.copy(position);
+        partMesh.userData.velocity = new THREE.Vector3(
+          (Math.random() - 0.5) * 0.08,
+          Math.random() * 0.1 + 0.05,
+          (Math.random() - 0.5) * 0.08
+        );
+        partMesh.userData.rotationSpeed = new THREE.Vector3(
+          Math.random() * 0.1,
+          Math.random() * 0.1,
+          Math.random() * 0.1
+        );
+        partMesh.castShadow = true;
+        bodyParts.push(partMesh);
+        scene.add(partMesh);
+      }
+    }
+    
+    function createForest() {
+      // Dense forest of trees
+      for (let i = 0; i < 40; i++) {
+        const treeGroup = new THREE.Group();
+        
+        // Tree trunk
+        const trunkHeight = 1.5 + Math.random() * 2;
+        const trunkGeo = new THREE.CylinderGeometry(
+          0.08 + Math.random() * 0.04,
+          0.12 + Math.random() * 0.06,
+          trunkHeight,
+          8
+        );
+        const trunkMat = new THREE.MeshPhongMaterial({
+          color: 0x2a1810,
+          roughness: 0.9
+        });
+        const trunk = new THREE.Mesh(trunkGeo, trunkMat);
+        trunk.position.y = GROUND_HEIGHT + trunkHeight / 2;
+        trunk.castShadow = true;
+        trunk.receiveShadow = true;
+        treeGroup.add(trunk);
+        
+        // Pine tree foliage (cone shape)
+        const foliageGeo = new THREE.ConeGeometry(
+          0.3 + Math.random() * 0.2,
+          0.8 + Math.random() * 0.4,
+          8
+        );
+        const foliageMat = new THREE.MeshPhongMaterial({
+          color: 0x0a3a0a,
+          roughness: 0.8
+        });
+        const foliage = new THREE.Mesh(foliageGeo, foliageMat);
+        foliage.position.y = GROUND_HEIGHT + trunkHeight + 0.3;
+        foliage.castShadow = true;
+        foliage.receiveShadow = true;
+        treeGroup.add(foliage);
+        
+        // Additional foliage layers for depth
+        for(let j = 0; j < 2; j++) {
+          const layerGeo = new THREE.ConeGeometry(
+            0.2 + Math.random() * 0.15,
+            0.4 + Math.random() * 0.2,
+            6
+          );
+          const layer = new THREE.Mesh(layerGeo, foliageMat);
+          layer.position.y = foliage.position.y + 0.3 + j * 0.2;
+          layer.scale.multiplyScalar(0.8 - j * 0.2);
+          treeGroup.add(layer);
+        }
+        
+        // Position trees along the road sides
+        const side = Math.random() > 0.5 ? 1 : -1;
+        treeGroup.position.set(
+          side * (0.8 + Math.random() * 2),
+          0,
+          -2 - Math.random() * 30
+        );
+        treeGroup.rotation.y = Math.random() * Math.PI;
+        scene.add(treeGroup);
+      }
+      
+      // Underbrush and bushes
+      for (let i = 0; i < 20; i++) {
+        const bushGeo = new THREE.SphereGeometry(0.15 + Math.random() * 0.1, 6, 5);
+        const bushMat = new THREE.MeshPhongMaterial({
+          color: 0x0a2a0a,
+          roughness: 0.9,
+          flatShading: true
+        });
+        const bush = new THREE.Mesh(bushGeo, bushMat);
+        bush.scale.y = 0.6;
+        bush.position.set(
+          (Math.random() > 0.5 ? 1 : -1) * (0.6 + Math.random() * 1.5),
+          GROUND_HEIGHT + 0.08,
+          -1 - Math.random() * 20
+        );
+        bush.castShadow = true;
+        scene.add(bush);
+      }
+      
+      // Fallen logs
+      for (let i = 0; i < 5; i++) {
+        const logGeo = new THREE.CylinderGeometry(0.06, 0.08, 0.8 + Math.random() * 0.4, 6);
+        const logMat = new THREE.MeshPhongMaterial({
+          color: 0x1a0f08,
+          roughness: 0.95
+        });
+        const log = new THREE.Mesh(logGeo, logMat);
+        log.rotation.z = Math.PI / 2;
+        log.position.set(
+          (Math.random() > 0.5 ? 1 : -1) * (1 + Math.random()),
+          GROUND_HEIGHT + 0.05,
+          -3 - Math.random() * 15
+        );
+        log.rotation.y = Math.random() * Math.PI;
+        log.castShadow = true;
+        scene.add(log);
+      }
+      
+      // Eerie fog particles near ground
+      for (let i = 0; i < 10; i++) {
+        const fogGeo = new THREE.PlaneGeometry(0.5, 0.5);
+        const fogMat = new THREE.MeshBasicMaterial({
+          color: 0x334433,
+          transparent: true,
+          opacity: 0.1,
+          side: THREE.DoubleSide
+        });
+        const fogPlane = new THREE.Mesh(fogGeo, fogMat);
+        fogPlane.position.set(
+          (Math.random() - 0.5) * 4,
+          GROUND_HEIGHT + 0.2 + Math.random() * 0.3,
+          -2 - Math.random() * 10
+        );
+        fogPlane.rotation.x = -Math.PI / 2;
+        scene.add(fogPlane);
+      }
+    }
+    
+    function createScreenBlood() {
+      // Just 1 blood splatter on screen (reduced from 5)
+      const bloodGeo = new THREE.PlaneGeometry(0.05, 0.08);
+      const bloodMat = new THREE.MeshBasicMaterial({
+        color: 0xff0000,
+        transparent: true,
+        opacity: 0.5,
+        side: THREE.DoubleSide
+      });
+      const blood = new THREE.Mesh(bloodGeo, bloodMat);
+      blood.position.set(
+        (Math.random() - 0.5) * 0.2,
+        (Math.random() - 0.5) * 0.15,
+        -0.35
+      );
+      blood.rotation.z = Math.random() * Math.PI;
+      
+      if(camera.parent) {
+        camera.parent.add(blood);
+      } else {
+        camera.add(blood);
+      }
+      
+      screenBlood.push(blood);
+    }
+    
+    function createExhaustSmoke() {
+      const smokeGeo = new THREE.SphereGeometry(0.02, 6, 6);
+      const smokeMat = new THREE.MeshBasicMaterial({
+        color: 0x222222,
+        transparent: true,
+        opacity: 0.4
+      });
+      const smoke = new THREE.Mesh(smokeGeo, smokeMat);
+      smoke.position.copy(truck.position);
+      smoke.position.y += 0.08;
+      smoke.position.z += 0.18;
+      smoke.position.x += (Math.random() - 0.5) * 0.12;
+      
+      smoke.userData.velocity = new THREE.Vector3(
+        (Math.random() - 0.5) * 0.01,
+        Math.random() * 0.02,
+        0.05
+      );
+      
+      exhaustSmoke.push(smoke);
+      scene.add(smoke);
+    }
+    
+    async function startARSession() {
+      if (!navigator.xr) { alert('WebXR not supported'); return; }
+      try {
+        const session = await navigator.xr.requestSession('immersive-ar', {
+          requiredFeatures: ['hit-test'],
+          optionalFeatures: ['dom-overlay'],
+          domOverlay: { root: document.body }
+        });
+        onSessionStarted(session);
+      } catch (error) { alert('Failed to start AR: ' + error.message); }
+    }
+    
+    function onSessionStarted(session) {
+      xrSession = session;
+      document.getElementById('overlay').classList.add('webxr-hidden');
+      renderer.xr.setReferenceSpaceType('local');
+      renderer.xr.setSession(session);
+      setupControllers(session);
+      renderer.setAnimationLoop(render);
+      session.addEventListener('end', onSessionEnd);
+      startControllerSelection();
+    }
+    
+    function startControllerSelection() {
+      isControllerSelectionPhase = true;
+      controllerSelectionStartTime = clock.getElapsedTime();
+      controllerHoldStartTime = {};
+    }
+    
+    function setupControllers(session) {
+      controllers = [];
+      for (let i = 0; i < 2; i++) {
+        const controller = renderer.xr.getController(i);
+        scene.add(controller);
+        controllers.push(controller);
+      }
+    }
+    
+    function checkControllerSelection() {
+      if (!isControllerSelectionPhase) return;
+      
+      const currentTime = clock.getElapsedTime();
+      let highestY = -999, highestIndex = -1;
+      
+      for (let i = 0; i < controllers.length; i++) {
+        if (controllers[i].visible && controllers[i].position.y > highestY) {
+          highestY = controllers[i].position.y;
+          highestIndex = i;
+        }
+      }
+      
+      if (highestIndex >= 0) {
+        const ctrl = controllers[highestIndex];
+        const inFront = ctrl.position.z > -0.8 && ctrl.position.z < -0.3 && Math.abs(ctrl.position.x) < 0.3;
+        
+        if (inFront) {
+          if (!controllerHoldStartTime[highestIndex]) controllerHoldStartTime[highestIndex] = currentTime;
+          if ((currentTime - controllerHoldStartTime[highestIndex]) * 1000 >= 3000) {
+            activeController = ctrl;
+            activeControllerIndex = highestIndex;
+            isControllerSelectionPhase = false;
+          }
+        } else { controllerHoldStartTime[highestIndex] = null; }
+      }
+      
+      if ((currentTime - controllerSelectionStartTime) * 1000 >= 10000) {
+        activeController = controllers[0];
+        isControllerSelectionPhase = false;
+      }
+    }
+    
+    function updateGame() {
+      time += 0.016;
+      
+      // Controller steering
+      if (activeController && activeController.visible) {
+        const ctrlX = activeController.position.x;
+        if (ctrlX < -0.15) targetLane = 0;
+        else if (ctrlX > 0.15) targetLane = 2;
+        else targetLane = 1;
+      }
+      
+      // Truck movement
+      const targetX = LANES[targetLane];
+      const deltaX = targetX - truck.position.x;
+      truck.position.x += deltaX * 0.1;
+      truck.rotation.z = deltaX * 2.5;
+      truck.rotation.y = deltaX * 0.4;
+      
+      // Truck bounce
+      truck.position.y = GROUND_HEIGHT + 0.06 + Math.sin(time * 10) * 0.004 + Math.cos(time * 15) * 0.002;
+      truck.rotation.x = Math.sin(time * 12) * 0.02;
+      
+      // Animate zombies
+      zombies.forEach(zombie => {
+        if(zombie.mesh) {
+          zombie.mesh.rotation.y = Math.sin(time * zombie.mesh.userData.shambleSpeed + zombie.mesh.userData.shambleOffset) * 0.3;
+          zombie.mesh.position.y = GROUND_HEIGHT + 0.08 + Math.abs(Math.sin(time * zombie.mesh.userData.shambleSpeed * 2)) * 0.02;
+        }
+      });
+      
+      // Create exhaust smoke
+      if (Math.random() > 0.8) createExhaustSmoke();
+      
+      // Update exhaust smoke
+      exhaustSmoke.forEach((smoke, i) => {
+        smoke.position.add(smoke.userData.velocity);
+        smoke.scale.multiplyScalar(1.06);
+        smoke.material.opacity -= 0.01;
+        if (smoke.material.opacity <= 0) {
+          scene.remove(smoke);
+          exhaustSmoke.splice(i, 1);
+        }
+      });
+      
+      // Update blood splatters
+      bloodSplatters.forEach((splatter, i) => {
+        if(splatter.userData && splatter.userData.velocity) {
+          splatter.position.add(splatter.userData.velocity);
+          splatter.userData.velocity.y -= 0.003;
+          
+          if(splatter.position.y <= GROUND_HEIGHT + 0.001) {
+            splatter.position.y = GROUND_HEIGHT + 0.001;
+            splatter.scale.x *= 1.5;
+            splatter.scale.z *= 1.5;
+            splatter.scale.y = 0.05;
+            delete splatter.userData.velocity;
+          }
+        }
+        
+        if(splatter.material) {
+          splatter.material.opacity -= 0.004;
+          if (splatter.material.opacity <= 0) {
+            scene.remove(splatter);
+            bloodSplatters.splice(i, 1);
+          }
+        }
+      });
+      
+      // Update body parts
+      bodyParts.forEach((part, i) => {
+        if(part.userData.velocity) {
+          part.position.add(part.userData.velocity);
+          part.userData.velocity.y -= 0.006;
+          
+          if(part.userData.rotationSpeed) {
+            part.rotation.x += part.userData.rotationSpeed.x;
+            part.rotation.y += part.userData.rotationSpeed.y;
+            part.rotation.z += part.userData.rotationSpeed.z;
+          }
+          
+          if(part.position.y <= GROUND_HEIGHT + 0.02) {
+            part.position.y = GROUND_HEIGHT + 0.02;
+            part.userData.velocity.multiplyScalar(0.5);
+            part.userData.rotationSpeed.multiplyScalar(0.7);
+            
+            if(part.userData.velocity.length() < 0.01) {
+              delete part.userData.velocity;
+              delete part.userData.rotationSpeed;
+            }
+          }
+        }
+      });
+      
+      // Update blood pools (slowly expand)
+      bloodPools.forEach(pool => {
+        pool.scale.x += 0.001;
+        pool.scale.y += 0.001;
+        pool.material.opacity -= 0.001;
+      });
+      
+      // Move road segments
+      roadSegments.forEach((segment, index) => {
+        segment.position.z += speed;
+        if (segment.position.z > 2) {
+          scene.remove(segment);
+          roadSegments.splice(index, 1);
+          
+          const furthestZ = Math.min(...roadSegments.map(s => s.position.z));
+          createRoadSegment(furthestZ - SEGMENT_LENGTH);
+        }
+      });
+      
+      // Check zombie collisions
+      zombies.forEach((zombie, index) => {
+        if(!zombie.mesh || !zombie.mesh.parent) {
+          zombies.splice(index, 1);
+          return;
+        }
+        
+        const zombieWorldPos = new THREE.Vector3();
+        zombie.mesh.getWorldPosition(zombieWorldPos);
+        const dist = Math.abs(zombieWorldPos.z - truck.position.z);
+        const laneDist = Math.abs(zombie.lane - truck.position.x);
+        
+        if (dist < 0.2 && laneDist < 0.14) {
+          // Moderate blood effects
+          createModerateBloodSplatter(zombieWorldPos);
+          createBodyParts(zombieWorldPos);
+          createScreenBlood();
+          
+          // Remove zombie
+          if(zombie.segment) zombie.segment.remove(zombie.mesh);
+          zombies.splice(index, 1);
+          
+          killCount++;
+          score += 100;
+          
+          // Mild camera shake
+          if(camera.parent) {
+            camera.position.x += (Math.random() - 0.5) * 0.02;
+            camera.position.y += (Math.random() - 0.5) * 0.02;
+            camera.rotation.z += (Math.random() - 0.5) * 0.01;
+          }
+          
+          // Small speed boost
+          speed = Math.min(0.25, speed + 0.005);
+        }
+      });
+      
+      // Update screen blood effects
+      screenBlood.forEach((blood, i) => {
+        blood.material.opacity -= 0.008;
+        blood.position.y -= 0.001;
+        if(blood.material.opacity <= 0) {
+          if(blood.parent) blood.parent.remove(blood);
+          screenBlood.splice(i, 1);
+        }
+      });
+      
+      speed = Math.min(0.22, speed + 0.0001);
+      score += speed * 5 + killCount * 2;
+    }
+    
+    function onWindowResize() {
+      camera.aspect = window.innerWidth / window.innerHeight;
+      camera.updateProjectionMatrix();
+      renderer.setSize(window.innerWidth, window.innerHeight);
+    }
+    
+    function onSessionEnd() {
+      document.getElementById('overlay').classList.remove('webxr-hidden');
+      renderer.setAnimationLoop(null);
+      xrSession = null;
+    }
+    
+    function render(timestamp, frame) {
+      if (frame) {
+        if (isControllerSelectionPhase) checkControllerSelection();
+        else updateGame();
+      }
+      renderer.render(scene, camera);
+    }
